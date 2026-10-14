@@ -218,7 +218,7 @@ Block C adds the multi-transport surface and operational features that take Post
 
 **FR49.** Posthorn **must** ship an AWS SES HTTP API transport (`type = "ses"`). AWS SigV4 authentication; JSON request body to the SESv2 `SendEmail` endpoint. Required config: `access_key_id`, `secret_access_key`, `region`. Same `ErrorClass` + `MessageID` contract as FR47.
 
-**FR50.** Posthorn **must** ship an outbound-SMTP transport (`type = "smtp"`). STARTTLS-enabled (`require_tls = true` default); SMTP AUTH PLAIN or LOGIN. Required config: `host`, `port`, `username`, `password`. Optional `hello_hostname` config controls the hostname announced in EHLO/HELO and defaults to `localhost`. The transport's `SendResult.MessageID` is the SMTP server's response to the final `.` (e.g., `250 OK queued as <id>`); when the upstream doesn't return a parsable ID, MessageID stays empty.
+**FR50.** Posthorn **must** ship an outbound-SMTP transport (`type = "smtp"`). STARTTLS-enabled (`require_tls = true` default); SMTP AUTH PLAIN or LOGIN. Required config: `host`, `port`, `username`, `password`. Optional `hello_hostname` config controls the hostname announced in EHLO/HELO and defaults to `localhost`. The transport's `SendResult.MessageID` is the SMTP server's response to the final `.` (e.g., `250 OK queued as <id>`); when the upstream doesn't return a parsable ID, MessageID stays empty. **2026-10-14 amendment ([#132](https://github.com/craigmccaskill/posthorn/issues/132), v2.1):** the TLS posture is selected by `tls = "starttls" | "implicit" | "none"` (default `starttls`); `require_tls` remains valid as the older spelling (`true` → `starttls`, `false` → `none`) and setting both keys is a config parse error. `implicit` completes the TLS handshake before the SMTP greeting (RFC 8314, conventionally port 465). Certificate verification applies in both TLS modes. A handshake failure is terminal. The wrong mode for a port **must** fail with an error naming the likely fix rather than a bare handshake error or a hang, and the per-send cap **must** bound the whole transaction, including the wait for the greeting.
 
 **FR51.** Every transport added in v1.2 **must** honor the existing `Transport` contract — `Send` returns `(SendResult, error)`, populates `MessageID` where the provider exposes one, and classifies errors as `*TransportError` with the correct `ErrorClass`.
 
@@ -374,7 +374,7 @@ The brief commits to test coverage for header injection (NFR2) and to a 30-day p
 
 ## Functional requirements — block F: v2.1 listener minor (added 2026-09-29)
 
-Block F is the first minor after v2.0, scoped to the SMTP listener by two named users rather than a milestone: per-tenant listeners (#30 → #120) and list-header passthrough (#113 → #115). No storage-shape change; everything is opt-in (NFR25).
+Block F is the first minor after v2.0, scoped to the SMTP listener by two named users rather than a milestone: per-tenant listeners (#30 → #120) and list-header passthrough (#113 → #115). No storage-shape change; everything is opt-in (NFR25). **2026-10-14 addition:** implicit TLS on the outbound SMTP transport (#132) rides in the same minor as an amendment to FR50, requested by an operator relaying to their own Stalwart server on port 465.
 
 ### Multiple listeners
 
@@ -535,6 +535,7 @@ Original definition of done was a Caddy v2 adapter module wrapping the core hand
 
 - **Story 9.5:** Outbound-SMTP transport. New `core/transport/smtpout.go` using stdlib `net/smtp` (ADR-17). STARTTLS-required by default; SMTP AUTH PLAIN/LOGIN. Required config: `host`, `port`, `username`, `password`; optional `hello_hostname` controls the EHLO/HELO hostname.
   - Acceptance: Test against a local `smtpd` (e.g., `mailpit` in CI; real Mailtrap or local relay for manual-test). Connection failure → ErrTransient. Auth failure → ErrTerminal. 421/450 (greylisting) → ErrTransient. STARTTLS downgrade attempts → ErrTerminal.
+  - **2026-10-14 amendment (#132, v2.1):** `tls` mode enum with implicit TLS per the FR50 amendment. Fake-server tests cover the STARTTLS upgrade, implicit TLS, certificate rejection in both modes, and both mode-mismatch directions. Live validation against a real port-465 server is on the manual-test procedure, offered by the requesting operator.
 
 - **Story 9.6:** Per-transport reference pages on the docs site. New pages under `configuration/transports/`: `resend.mdx`, `mailgun.mdx`, `ses.mdx`, `smtp.mdx`. Each documents required + optional config, common gotchas, manual-test invocation. Update the TOML reference's transport table.
   - Acceptance: All four pages render in the sidebar. Each has a copy-pasteable config block.

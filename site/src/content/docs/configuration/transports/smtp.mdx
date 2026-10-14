@@ -1,6 +1,6 @@
 ---
 title: Outbound SMTP
-description: SMTP relay transport — STARTTLS + AUTH PLAIN against any operator-controlled SMTP server. Stdlib net/smtp under the hood.
+description: SMTP relay transport — STARTTLS or implicit TLS (port 465) + AUTH PLAIN against any operator-controlled SMTP server. Stdlib net/smtp under the hood.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -16,6 +16,20 @@ username = "postmaster@mg.yourdomain.com"
 password = "${env.SMTP_PASSWORD}"
 # Set this when the relay requires a public domain in EHLO/HELO.
 hello_hostname = "mail.yourdomain.com"
+# "starttls" (default) upgrades after EHLO; "implicit" runs TLS before the
+# greeting, which is what port 465 expects; "none" is plaintext.
+tls = "starttls"
+```
+
+A self-hosted mail server (Stalwart, Mailcow, Postfix) that exposes submission on port 465 only:
+
+```toml
+[endpoints.transport.settings]
+host     = "mail.example.com"
+port     = 465
+tls      = "implicit"
+username = "${env.SMTP_USERNAME}"
+password = "${env.SMTP_PASSWORD}"
 ```
 
 ## Settings
@@ -23,20 +37,21 @@ hello_hostname = "mail.yourdomain.com"
 | Setting | Required | Default | Description |
 |---|---|---|---|
 | `host` | yes | — | SMTP server hostname. |
-| `port` | yes | — | SMTP server port. Typically `587` (STARTTLS) or `2525` (alternative STARTTLS port). Port `25` is blocked outbound on most cloud providers. |
+| `port` | yes | — | SMTP server port. `587` for STARTTLS, `465` for implicit TLS (set `tls = "implicit"`), `2525` on relays that offer it as an alternative STARTTLS port. Port `25` is blocked outbound on most cloud providers. |
 | `username` | yes | — | SMTP AUTH PLAIN username. |
 | `password` | yes | — | SMTP AUTH PLAIN password. **Never logged** in any code path. |
 | `hello_hostname` | no | `"localhost"` | Hostname announced in EHLO/HELO. Set this to a domain your relay recognizes when it rejects `localhost` clients. |
-| `require_tls` | no | `true` | Require STARTTLS before sending credentials. Setting to `false` is **not recommended** outside of local testing. |
-| `tls_insecure_skip_verify` | no | `false` | Skip TLS certificate validation. **Test-only escape hatch** for self-signed certs in local dev. |
+| `tls` | no | `"starttls"` | `"starttls"` connects in plaintext and upgrades before AUTH, refusing a server that doesn't offer STARTTLS. `"implicit"` runs the TLS handshake before the SMTP greeting (port 465). `"none"` is plaintext, for local testing or a trusted internal network only. Since v2.1. |
+| `require_tls` | no | — | Older spelling of `tls`: `true` is `"starttls"`, `false` is `"none"`. Still accepted. Setting both keys is a config error. |
+| `tls_insecure_skip_verify` | no | `false` | Skip TLS certificate validation in either TLS mode. **Test-only escape hatch** for self-signed certs in local dev. |
 
 ## Behavior
 
 | Aspect | Behavior |
 |---|---|
-| Protocol flow | EHLO → STARTTLS → AUTH PLAIN → MAIL FROM → RCPT TO → DATA → QUIT |
+| Protocol flow | `starttls`: EHLO → STARTTLS → AUTH PLAIN → MAIL FROM → RCPT TO → DATA → QUIT. `implicit`: TLS handshake first, then the same sequence without STARTTLS. `none`: no TLS step. |
 | EHLO/HELO hostname | `hello_hostname` when configured; `localhost` otherwise |
-| Per-request timeout | 30s (longer than HTTP transports because SMTP has slower greeting + DATA round trips) |
+| Per-request timeout | 30s, applied to the socket, so it caps the whole transaction from connect to QUIT (longer than HTTP transports because SMTP has slower greeting + DATA round trips) |
 | Connection reuse | None — one TCP connection per Send. (Connection pooling is a v2 optimization.) |
 | Message body | Hand-constructed RFC 5322 message (From/To/Subject/Reply-To headers + plain-text body, UTF-8) |
 | Subject encoding | RFC 2047 B-encoding for non-ASCII subjects; ASCII passes through unchanged |
@@ -49,6 +64,7 @@ The SMTP transport is for operators who want Posthorn to relay to an **SMTP serv
 - **Mailgun's SMTP gateway** (`smtp.mailgun.org:587`) — same Mailgun account, SMTP wire instead of HTTP
 - **SendGrid's SMTP relay** (`smtp.sendgrid.net:587`)
 - **A self-hosted Postfix smarthost** that handles the actual delivery to recipients
+- **Your own mail server** (Stalwart, Mailcow, Postfix) on its 465 or 587 submission port
 - **Mailtrap or MailHog** for testing in a local development environment
 - **An internal mail server** for org-internal-only notifications that never leave the network
 
@@ -59,8 +75,9 @@ If you're not sure which to pick, prefer one of the HTTP API transports (Postmar
 | Condition | Error class | Retry? |
 |---|---|---|
 | Connect / TCP timeout / DNS failure | `ErrTransient` | yes, after 1s |
-| STARTTLS not advertised when `require_tls=true` | `ErrTerminal` | no — operator must fix config or pick a different server |
-| TLS handshake failure | `ErrTransient` | yes, after 1s |
+| STARTTLS not advertised when `tls = "starttls"` | `ErrTerminal` | no — operator must fix config or pick a different server |
+| TLS handshake failure (either mode) | `ErrTerminal` | no — the certificate didn't verify, or the mode doesn't match the port (see gotchas) |
+| Connected, but no greeting before the deadline | `ErrTransient` | yes, after 1s — when the port is 465 the error suggests `tls = "implicit"` |
 | `AUTH` rejected (typically `535 5.7.8`) | `ErrTerminal` (bad credentials) | no |
 | `MAIL FROM` / `RCPT TO` `4xx` (greylisting, `450 4.7.1`) | `ErrTransient` | yes, after 1s |
 | `MAIL FROM` / `RCPT TO` `5xx` (relay-rejected, bad address, `550 5.1.1`) | `ErrTerminal` | no |
@@ -80,7 +97,10 @@ Additionally:
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `smtp: server does not advertise STARTTLS but require_tls=true` | Server's EHLO response omits STARTTLS (rare for legitimate relays) | Verify server hostname/port; if intentional (local-network plaintext), set `require_tls = false` explicitly |
+| `smtp: server does not advertise STARTTLS (tls = "starttls" requires it)` | Server's EHLO response omits STARTTLS (rare for legitimate relays) | Verify server hostname/port; if intentional (local-network plaintext), set `tls = "none"` explicitly |
+| `smtp: TLS handshake failed: server answered in plaintext, so port 587 probably expects tls = "starttls"` | `tls = "implicit"` pointed at a STARTTLS port | Set `tls = "starttls"`, or use the server's implicit-TLS port (usually 465) |
+| `smtp: connected but no SMTP greeting arrived (port 465 usually expects tls = "implicit")` | `tls = "starttls"` pointed at an implicit-TLS port; both sides wait for the other to speak first | Set `tls = "implicit"` |
+| `smtp: TLS handshake failed` or `smtp: STARTTLS handshake failed` with an x509 error | The server's certificate isn't trusted: self-signed, wrong hostname, expired | Fix the certificate; for local testing only, `tls_insecure_skip_verify = true` |
 | `535 5.7.8 Authentication failed` | Wrong username or password, or AUTH PLAIN not supported by server | Check creds; some servers require username to be the literal email address, not a username |
 | Relay rejects `EHLO localhost` / `HELO localhost` | Relay policy requires an identifiable client hostname | Set `hello_hostname` to a domain accepted by the relay |
 | Connection times out on connect | Cloud provider blocking outbound port 25 (and sometimes 587) | Use port 2525 if your provider blocks 587, or switch to an HTTP-API transport |
@@ -88,7 +108,7 @@ Additionally:
 | Mail accepted but never delivered | The SMTP relay accepted but failed downstream — Posthorn has no visibility | Check the relay's own logs and bounce notifications |
 
 <Aside type="caution">
-**Port 25 is broken on most cloud providers.** DigitalOcean, AWS Lightsail, Linode, Vultr, GCP, and Azure all block outbound port 25 by default. SMTP transport on port 25 to anywhere outside your cloud account's network will fail at TCP-connect. Use 587 (STARTTLS) or 2525 (some relays advertise this as an alternative) or pick an HTTP-API transport.
+**Port 25 is broken on most cloud providers.** DigitalOcean, AWS Lightsail, Linode, Vultr, GCP, and Azure all block outbound port 25 by default. SMTP transport on port 25 to anywhere outside your cloud account's network will fail at TCP-connect. Use 587 (STARTTLS), 465 (implicit TLS), or 2525 (some relays advertise this as an alternative) or pick an HTTP-API transport.
 
 This is the original problem Posthorn was built to work around — except now we're using it as an egress option for operators who happen to have a working SMTP relay reachable.
 </Aside>

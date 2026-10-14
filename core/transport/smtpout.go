@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -23,11 +24,12 @@ import (
 // Implements the Transport interface against an upstream SMTP relay
 // (Mailgun's SMTP gateway, a self-hosted Postfix relay, Mailtrap, etc.)
 // using stdlib `net/smtp` primitives — no third-party SMTP library
-// dependency. STARTTLS-enabled by default; SMTP AUTH PLAIN.
+// dependency. STARTTLS by default; implicit TLS (port 465) or plaintext
+// by configuration (TLSMode). SMTP AUTH PLAIN.
 //
-// Each Send opens a fresh TCP+TLS connection, runs the full SMTP
-// transaction (EHLO → STARTTLS → AUTH → MAIL → RCPT → DATA → QUIT),
-// then closes. Connection reuse is a v2 optimization once we have
+// Each Send opens a fresh TCP connection, runs the full SMTP transaction
+// (TLS handshake first in implicit mode; EHLO → STARTTLS → AUTH → MAIL →
+// RCPT → DATA → QUIT), then closes. Connection reuse is a v2 optimization once we have
 // async sending and persistent state.
 //
 // NFR1 enforcement: SMTP transport hand-writes the RFC 5322 message
@@ -48,6 +50,36 @@ const (
 	smtpRequestTimeout = 30 * time.Second
 )
 
+// TLSMode selects how the connection to the relay is secured. Configured
+// as settings.tls (FR50); the older settings.require_tls boolean maps onto
+// it (true → TLSStartTLS, false → TLSNone).
+type TLSMode string
+
+const (
+	// TLSStartTLS connects in plaintext and upgrades with STARTTLS before
+	// AUTH. The server must advertise the extension; when it doesn't,
+	// Send fails closed. The default.
+	TLSStartTLS TLSMode = "starttls"
+
+	// TLSImplicit wraps the TCP connection in TLS before the SMTP greeting
+	// (RFC 8314 implicit TLS, conventionally port 465).
+	TLSImplicit TLSMode = "implicit"
+
+	// TLSNone sends in plaintext. net/smtp refuses to send AUTH PLAIN over
+	// plaintext to anything but localhost, so this is for local testing
+	// and trusted internal networks only.
+	TLSNone TLSMode = "none"
+)
+
+// ParseTLSMode validates a settings.tls value.
+func ParseTLSMode(s string) (TLSMode, bool) {
+	switch TLSMode(s) {
+	case TLSStartTLS, TLSImplicit, TLSNone:
+		return TLSMode(s), true
+	}
+	return "", false
+}
+
 // SMTPOutTransport implements Transport against an upstream SMTP relay.
 type SMTPOutTransport struct {
 	Host     string
@@ -59,20 +91,29 @@ type SMTPOutTransport struct {
 	// identify the client; the default is localhost for compatibility.
 	HelloHostname string
 
-	// RequireTLS gates whether STARTTLS is mandatory. Default true. When
-	// true and the server doesn't advertise STARTTLS, Send fails with
-	// ErrTerminal — a misconfiguration the operator must fix.
-	RequireTLS bool
+	// TLS selects plaintext, STARTTLS upgrade, or implicit TLS from the
+	// first byte. Default TLSStartTLS. In STARTTLS mode a server that
+	// doesn't advertise the extension fails Send with ErrTerminal — a
+	// misconfiguration the operator must fix, never a silent downgrade.
+	TLS TLSMode
 
-	// TLSInsecureSkipVerify disables certificate validation on STARTTLS.
-	// Test-only escape hatch for self-signed certs in local development;
-	// production operators must leave this false and use a real cert.
+	// TLSInsecureSkipVerify disables certificate validation in both TLS
+	// modes. Test-only escape hatch for self-signed certs in local
+	// development; production operators must leave this false and use a
+	// real cert.
 	TLSInsecureSkipVerify bool
 
-	// dial is the connection factory. Production: default uses
-	// net.Dialer.DialContext + smtp.NewClient. Tests inject a function
-	// that returns a client connected to a fake SMTP server.
-	dial func(ctx context.Context, addr string) (*smtp.Client, error)
+	// rootCAs overrides the system roots for certificate verification.
+	// Tests inject the fake server's self-signed cert; production leaves
+	// it nil.
+	rootCAs *x509.CertPool
+
+	// dial is the connection factory. Production: net.Dialer.DialContext,
+	// the per-Send deadline applied to the socket, an implicit-TLS
+	// handshake when tlsConfig is non-nil, then smtp.NewClient (which
+	// reads the greeting). Tests inject a function that returns a client
+	// connected to a fake SMTP server.
+	dial func(ctx context.Context, addr string, tlsConfig *tls.Config) (*smtp.Client, error)
 
 	// now is injectable for deterministic Date headers in tests.
 	now func() time.Time
@@ -80,37 +121,82 @@ type SMTPOutTransport struct {
 
 // NewSMTPOutTransport constructs an outbound SMTP transport. host and port
 // identify the upstream relay; username/password are the SMTP AUTH PLAIN
-// credentials; requireTLS controls STARTTLS enforcement.
-func NewSMTPOutTransport(host string, port int, username, password string, requireTLS bool) *SMTPOutTransport {
+// credentials; mode selects plaintext, STARTTLS, or implicit TLS (an
+// empty mode means TLSStartTLS).
+func NewSMTPOutTransport(host string, port int, username, password string, mode TLSMode) *SMTPOutTransport {
+	if mode == "" {
+		mode = TLSStartTLS
+	}
 	return &SMTPOutTransport{
-		Host:       host,
-		Port:       port,
-		Username:   username,
-		Password:   password,
-		RequireTLS: requireTLS,
-		dial:       defaultSMTPDial,
-		now:        time.Now,
+		Host:     host,
+		Port:     port,
+		Username: username,
+		Password: password,
+		TLS:      mode,
+		dial:     defaultSMTPDial,
+		now:      time.Now,
 	}
 }
 
-// defaultSMTPDial is the production dial: open TCP, wrap in smtp.Client.
-func defaultSMTPDial(ctx context.Context, addr string) (*smtp.Client, error) {
+// tlsHandshakeError marks a failed implicit-TLS handshake so Send can
+// classify it as terminal: a certificate or configuration problem, not a
+// transient network fault.
+type tlsHandshakeError struct{ err error }
+
+func (e *tlsHandshakeError) Error() string { return "tls handshake: " + e.err.Error() }
+func (e *tlsHandshakeError) Unwrap() error { return e.err }
+
+// greetingError marks a connection that opened but produced no usable
+// SMTP greeting: a hung relay, or STARTTLS mode pointed at an
+// implicit-TLS port, which looks identical from this side.
+type greetingError struct{ err error }
+
+func (e *greetingError) Error() string { return "greeting: " + e.err.Error() }
+func (e *greetingError) Unwrap() error { return e.err }
+
+// defaultSMTPDial is the production dial: open TCP, apply the per-Send
+// deadline to the socket so no protocol step can stall past it, wrap in
+// TLS when tlsConfig is set (implicit mode), then hand the connection to
+// smtp.Client, which reads the server greeting.
+func defaultSMTPDial(ctx context.Context, addr string, tlsConfig *tls.Config) (*smtp.Client, error) {
 	d := net.Dialer{}
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
 	}
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
+	if tlsConfig != nil {
+		tlsConn := tls.Client(conn, tlsConfig)
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			_ = conn.Close()
+			return nil, &tlsHandshakeError{err: err}
+		}
+		conn = tlsConn
+	}
 	c, err := smtp.NewClient(conn, host)
 	if err != nil {
 		_ = conn.Close()
-		return nil, err
+		return nil, &greetingError{err: err}
 	}
 	return c, nil
+}
+
+// tlsConfig builds the client TLS configuration shared by STARTTLS and
+// implicit mode: verify the relay's certificate against the system roots
+// (or the injected test roots) for the configured host name.
+func (s *SMTPOutTransport) tlsConfig() *tls.Config {
+	return &tls.Config{
+		ServerName:         s.Host,
+		InsecureSkipVerify: s.TLSInsecureSkipVerify,
+		RootCAs:            s.rootCAs,
+	}
 }
 
 // Send implements Transport.
@@ -118,6 +204,8 @@ func defaultSMTPDial(ctx context.Context, addr string) (*smtp.Client, error) {
 // Error class mapping:
 //
 //	connect/network/timeout         → ErrTransient
+//	no greeting before the deadline → ErrTransient (hint when port is 465)
+//	TLS handshake failure           → ErrTerminal (cert, or wrong mode for the port)
 //	STARTTLS missing when required  → ErrTerminal (config bug, not transient)
 //	AUTH rejected                   → ErrTerminal (bad creds)
 //	MAIL/RCPT/DATA 4xx              → ErrTransient (greylisting, temporary)
@@ -150,9 +238,13 @@ func (s *SMTPOutTransport) Send(ctx context.Context, msg Message) (SendResult, e
 	defer cancel()
 
 	addr := net.JoinHostPort(s.Host, strconv.Itoa(s.Port))
-	c, err := s.dial(deadlineCtx, addr)
+	var implicitTLS *tls.Config
+	if s.TLS == TLSImplicit {
+		implicitTLS = s.tlsConfig()
+	}
+	c, err := s.dial(deadlineCtx, addr, implicitTLS)
 	if err != nil {
-		return SendResult{}, &TransportError{Class: ErrTransient, Cause: err, Message: "smtp: dial failed"}
+		return SendResult{}, s.classifyDialError(err)
 	}
 	defer func() { _ = c.Close() }()
 
@@ -167,23 +259,20 @@ func (s *SMTPOutTransport) Send(ctx context.Context, msg Message) (SendResult, e
 		return SendResult{}, classifySMTPError(err, "smtp: EHLO failed")
 	}
 
-	// STARTTLS upgrade. Enforced when RequireTLS is true — if the server
-	// doesn't advertise the extension, we refuse to continue (treating
-	// plaintext as an operator-side config error, not a transient issue).
-	if s.RequireTLS {
+	// STARTTLS upgrade (TLSStartTLS). If the server doesn't advertise the
+	// extension we refuse to continue: plaintext is an operator-side
+	// config error, not a transient fault, and never a silent downgrade.
+	// Implicit mode is already encrypted; plaintext mode skips this.
+	if s.TLS == TLSStartTLS {
 		ok, _ := c.Extension("STARTTLS")
 		if !ok {
 			return SendResult{}, &TransportError{
 				Class:   ErrTerminal,
-				Message: "smtp: server does not advertise STARTTLS but require_tls=true",
+				Message: "smtp: server does not advertise STARTTLS (tls = \"starttls\" requires it)",
 			}
 		}
-		tlsConfig := &tls.Config{
-			ServerName:         s.Host,
-			InsecureSkipVerify: s.TLSInsecureSkipVerify,
-		}
-		if err := c.StartTLS(tlsConfig); err != nil {
-			return SendResult{}, classifySMTPError(err, "smtp: STARTTLS upgrade failed")
+		if err := c.StartTLS(s.tlsConfig()); err != nil {
+			return SendResult{}, classifyStartTLSError(err)
 		}
 	}
 
@@ -422,6 +511,50 @@ func needsMIMEEncoding(s string) bool {
 	return false
 }
 
+// classifyDialError maps a dial failure to a TransportError. Network
+// faults are transient. A failed TLS handshake is terminal: the cert
+// didn't verify, or the server spoke plaintext, which means tls =
+// "implicit" is pointed at a STARTTLS port. A connection that opened but
+// never produced a greeting is transient (a hung relay), with a hint
+// when the port is 465, because STARTTLS mode against an implicit-TLS
+// port looks exactly like a hung relay from this side.
+func (s *SMTPOutTransport) classifyDialError(err error) *TransportError {
+	var hs *tlsHandshakeError
+	if errors.As(err, &hs) {
+		msg := "smtp: TLS handshake failed"
+		var rhe tls.RecordHeaderError
+		if errors.As(err, &rhe) {
+			msg = fmt.Sprintf("smtp: TLS handshake failed: server answered in plaintext, so port %d probably expects tls = \"starttls\"", s.Port)
+		}
+		return &TransportError{Class: ErrTerminal, Cause: err, Message: msg}
+	}
+	var ge *greetingError
+	if errors.As(err, &ge) {
+		var tperr *textproto.Error
+		if errors.As(ge.err, &tperr) {
+			return classifySMTPError(ge.err, "smtp: server refused the connection in its greeting")
+		}
+		msg := "smtp: connected but no SMTP greeting arrived"
+		if s.TLS != TLSImplicit && s.Port == 465 {
+			msg += " (port 465 usually expects tls = \"implicit\")"
+		}
+		return &TransportError{Class: ErrTransient, Cause: err, Message: msg}
+	}
+	return &TransportError{Class: ErrTransient, Cause: err, Message: "smtp: dial failed"}
+}
+
+// classifyStartTLSError maps a StartTLS failure. An SMTP reply code
+// (the server refused the command) classifies by code; anything else is
+// the handshake itself failing — certificate verification, protocol
+// mismatch — which is a configuration problem, so terminal.
+func classifyStartTLSError(err error) *TransportError {
+	var tperr *textproto.Error
+	if errors.As(err, &tperr) {
+		return classifySMTPError(err, "smtp: STARTTLS command rejected")
+	}
+	return &TransportError{Class: ErrTerminal, Cause: err, Message: "smtp: STARTTLS handshake failed"}
+}
+
 // classifySMTPError maps an error from a net/smtp.Client command to a
 // TransportError with the right ErrorClass. SMTP protocol errors come
 // back as *textproto.Error which exposes the response code directly.
@@ -494,7 +627,39 @@ func validateSMTPOutSettings(settings map[string]any) error {
 			return fmt.Errorf("smtp transport settings.hello_hostname must be a non-empty string with no whitespace")
 		}
 	}
+	if _, err := smtpTLSModeFromSettings(settings); err != nil {
+		return err
+	}
 	return nil
+}
+
+// smtpTLSModeFromSettings resolves settings.tls, falling back to the
+// older settings.require_tls boolean. Both keys together is an error so
+// a config can't say two different things about the same connection.
+func smtpTLSModeFromSettings(settings map[string]any) (TLSMode, error) {
+	tlsRaw, hasTLS := settings["tls"]
+	reqRaw, hasReq := settings["require_tls"]
+	switch {
+	case hasTLS && hasReq:
+		return "", fmt.Errorf("smtp transport: set settings.tls or settings.require_tls, not both")
+	case hasTLS:
+		str, isString := tlsRaw.(string)
+		mode, valid := ParseTLSMode(str)
+		if !isString || !valid {
+			return "", fmt.Errorf(`smtp transport settings.tls must be "starttls", "implicit", or "none", got %v`, tlsRaw)
+		}
+		return mode, nil
+	case hasReq:
+		b, isBool := reqRaw.(bool)
+		if !isBool {
+			return "", fmt.Errorf("smtp transport settings.require_tls must be true or false, got %v", reqRaw)
+		}
+		if b {
+			return TLSStartTLS, nil
+		}
+		return TLSNone, nil
+	}
+	return TLSStartTLS, nil
 }
 
 func buildSMTPOutFromSettings(settings map[string]any) (Transport, error) {
@@ -503,9 +668,9 @@ func buildSMTPOutFromSettings(settings map[string]any) (Transport, error) {
 	username, _ := settings["username"].(string)
 	password, _ := settings["password"].(string)
 	helloHostname, _ := settings["hello_hostname"].(string)
-	requireTLS := true
-	if v, ok := settings["require_tls"].(bool); ok {
-		requireTLS = v
+	mode, err := smtpTLSModeFromSettings(settings)
+	if err != nil {
+		return nil, err
 	}
 	insecureSkipVerify := false
 	if v, ok := settings["tls_insecure_skip_verify"].(bool); ok {
@@ -514,7 +679,7 @@ func buildSMTPOutFromSettings(settings map[string]any) (Transport, error) {
 	if host == "" || port <= 0 || username == "" || password == "" {
 		return nil, fmt.Errorf("smtp: host, port, username, password all required")
 	}
-	tp := NewSMTPOutTransport(host, port, username, password, requireTLS)
+	tp := NewSMTPOutTransport(host, port, username, password, mode)
 	tp.HelloHostname = helloHostname
 	tp.TLSInsecureSkipVerify = insecureSkipVerify
 	return tp, nil

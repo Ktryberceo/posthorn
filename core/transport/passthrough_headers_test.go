@@ -252,7 +252,7 @@ func TestMailgun_PassthroughHeaders(t *testing.T) {
 
 func TestSMTPOut_PassthroughHeaders(t *testing.T) {
 	srv := startFakeSMTPServer(t)
-	tp := newSMTPTestTransport(t, srv, false)
+	tp := newSMTPTestTransport(t, srv, TLSNone)
 	msg := goodSMTPMessage()
 	msg.Headers = passthroughHeaders
 	if _, err := tp.Send(context.Background(), msg); err != nil {
@@ -279,7 +279,7 @@ func TestSMTPOut_PassthroughHeaders(t *testing.T) {
 	for name, bad := range badHeaderSets {
 		t.Run(name, func(t *testing.T) {
 			srv := startFakeSMTPServer(t)
-			tp := newSMTPTestTransport(t, srv, false)
+			tp := newSMTPTestTransport(t, srv, TLSNone)
 			msg := goodSMTPMessage()
 			msg.Headers = bad
 			_, err := tp.Send(context.Background(), msg)
