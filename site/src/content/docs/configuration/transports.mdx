@@ -73,6 +73,8 @@ The marginal case is AWS SES, which needs Signature Version 4 (SigV4) signing. W
 
 Adding a sixth (or sixteenth) transport is a single new file in `core/transport/`. The file calls `Register` in an `init()` that names the type and provides a validator + builder pair. No edits to the gateway handler, the config loader, the rate limiter, or the response writer.
 
+Want a provider added upstream? What it takes is in [CONTRIBUTING](https://github.com/craigmccaskill/posthorn/blob/main/CONTRIBUTING.md#adding-a-transport): a named operator using it, a bespoke client that fits in about 250 lines, a free or sandbox tier so the maintainer can validate, and one live send in the PR. Open an issue naming the provider before writing code.
+
 <Aside type="caution">
 The transport registry is an internal extension point. If you're forking Posthorn to add a custom transport, the API may evolve — open an issue first so we can keep your patch compatible.
 </Aside>
