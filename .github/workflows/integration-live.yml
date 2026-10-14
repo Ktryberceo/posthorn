@@ -47,7 +47,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          go-version: '1.27'
           cache-dependency-path: core/go.mod
 
       # SES only: assume the OIDC role if one is configured. The action
