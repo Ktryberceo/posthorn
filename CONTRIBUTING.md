@@ -4,15 +4,15 @@ Thanks for your interest. This guide covers what you need to build, test, and co
 
 ## Scope
 
-The v1.0 specification is shipped. The full requirements live in [`spec/`](./spec/) across three documents:
+v1.0 and v2.0 are shipped and v2.1 is at release candidate. The full requirements live in [`spec/`](./spec/) across three documents:
 
 1. [`spec/01-project-brief.md`](./spec/01-project-brief.md) — problem, users, scope, threat model, risks
 2. [`spec/02-prd.md`](./spec/02-prd.md) — functional and non-functional requirements, epic and story breakdown
 3. [`spec/03-architecture.md`](./spec/03-architecture.md) — file layout, lifecycle, request flow, component design, ADRs
 
-v1.0 covers three ingress shapes (HTTP form, HTTP API with Bearer auth + idempotency, SMTP listener) and five transports (Postmark, Resend, Mailgun, AWS SES, outbound-SMTP relay) plus the operational surface (`/healthz`, `/metrics`, dry-run, CSRF tokens, named `trusted_proxies` presets, IP-stripping).
+v1.0 covers three ingress shapes (HTTP form, HTTP API with Bearer auth + idempotency, SMTP listener) and five transports (Postmark, Resend, Mailgun, AWS SES, outbound-SMTP relay) plus the operational surface (`/healthz`, `/metrics`, dry-run, CSRF tokens, named `trusted_proxies` presets, IP-stripping). v2.0 added the stateful platform: optional SQLite storage with a durable retry queue and durable idempotency, a bounce/complaint suppression list, Postmark lifecycle webhooks, a webhook transport, HTML bodies, and attachments. v2.1 adds multiple SMTP listeners, allowlisted List-header passthrough, and implicit TLS on the outbound SMTP transport.
 
-The next milestone is **v2 — platform features**: persistent storage (SQLite submission log + durable retry queue across restarts), suppression list, lifecycle event callbacks (HMAC-signed webhooks), durable idempotency, RFC 8058 one-click unsubscribe, file attachments, HTML body, multiple outputs per endpoint, multi-tenant SMTP routing. The canonical "deliberately not on the roadmap" list is in [`spec/01-project-brief.md`](./spec/01-project-brief.md). If you're unsure whether a contribution fits, open an issue before writing code.
+What comes next is on the [roadmap page](https://posthorn.dev/roadmap/), which is canonical. The demand-gated items (unsubscribe injection, fan-out to several transports, per-sender routing on a shared listener, batch send) ship when an operator shows up with the workload, not before. The canonical "deliberately not on the roadmap" list is in [`spec/01-project-brief.md`](./spec/01-project-brief.md). If you're unsure whether a contribution fits, open an issue before writing code.
 
 ### Adding a transport
 
@@ -22,7 +22,7 @@ The architecture doc's [Architectural decisions log](./spec/03-architecture.md#a
 
 ## Prerequisites
 
-- Go 1.25+
+- Go 1.26+
 - An account with at least one of the supported transactional providers for end-to-end testing (Postmark sandbox token, Resend test key, Mailgun sandbox domain, AWS SES sandbox, or a generic outbound-SMTP relay like Mailtrap)
 - Docker (optional, for testing the container deployment)
 
@@ -31,7 +31,7 @@ The architecture doc's [Architectural decisions log](./spec/03-architecture.md#a
 Posthorn is a single Go module:
 
 - [`core/`](./core/) — the gateway, the `cmd/posthorn` binary, all the business logic.
-- [`spec/`](./spec/) — the locked v1.0 specification.
+- [`spec/`](./spec/) — the specification: project brief, PRD, architecture.
 - [`docs/`](./docs/) — operator-facing documentation that lives in-repo. The public site source is in [`site/`](./site/) and ships to [posthorn.dev](https://posthorn.dev).
 - [`site/`](./site/) — Astro + Starlight source for the docs site.
 
@@ -81,11 +81,11 @@ The live tier stops at "the real provider accepted a well-formed request" — it
 
 ## Updating the spec
 
-If implementation reveals something the spec missed, update the relevant doc in `spec/` and reference the change in the commit that exposes it. The spec is the source of truth for v1.0 work; pull requests that change behavior without a corresponding spec update will be sent back.
+If implementation reveals something the spec missed, update the relevant doc in `spec/` and reference the change in the commit that exposes it. The spec is the source of truth; pull requests that change behavior without a corresponding spec update will be sent back.
 
 ## Security
 
-This codebase handles untrusted input from public form submissions, server-to-server callers (API mode), and internal-network SMTP clients, plus credentials for an outbound email provider. Security-relevant changes — header construction, API key handling, rate limiting, input validation, fail-closed origin checks, SMTP envelope vs. MIME header handling, idempotency-key tampering, brute-force lockouts — require explicit test coverage per the security NFRs in [`spec/02-prd.md`](./spec/02-prd.md) (NFR1 through NFR24).
+This codebase handles untrusted input from public form submissions, server-to-server callers (API mode), and internal-network SMTP clients, plus credentials for an outbound email provider. Security-relevant changes — header construction, API key handling, rate limiting, input validation, fail-closed origin checks, SMTP envelope vs. MIME header handling, idempotency-key tampering, brute-force lockouts — require explicit test coverage per the security NFRs in [`spec/02-prd.md`](./spec/02-prd.md) (NFR1 through NFR33).
 
 For vulnerability reporting, see [SECURITY.md](./SECURITY.md). **Do not open public GitHub issues for security vulnerabilities.**
 
