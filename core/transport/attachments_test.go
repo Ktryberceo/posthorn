@@ -136,7 +136,7 @@ func TestSES_Attachments(t *testing.T) {
 
 func TestSMTPOut_Attachments_MultipartMixed(t *testing.T) {
 	srv := startFakeSMTPServer(t)
-	tp := newSMTPTestTransport(t, srv, false)
+	tp := newSMTPTestTransport(t, srv, TLSNone)
 
 	msg := attachedMessage()
 	if _, err := tp.Send(context.Background(), msg); err != nil {
@@ -192,7 +192,7 @@ func TestSMTPOut_Attachments_MultipartMixed(t *testing.T) {
 
 func TestSMTPOut_HTMLPlusAttachments_NestedAlternative(t *testing.T) {
 	srv := startFakeSMTPServer(t)
-	tp := newSMTPTestTransport(t, srv, false)
+	tp := newSMTPTestTransport(t, srv, TLSNone)
 
 	msg := attachedMessage()
 	msg.BodyHTML = "<p>html body</p>"
@@ -231,7 +231,7 @@ func TestSMTPOut_HTMLPlusAttachments_NestedAlternative(t *testing.T) {
 // into the DATA blob on the one transport where we build MIME by hand.
 func TestSMTPOut_AttachmentFilename_NoHeaderInjection(t *testing.T) {
 	srv := startFakeSMTPServer(t)
-	tp := newSMTPTestTransport(t, srv, false)
+	tp := newSMTPTestTransport(t, srv, TLSNone)
 
 	msg := Message{
 		From: "a@example.com", To: []string{"b@example.com"},

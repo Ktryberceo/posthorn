@@ -25,7 +25,7 @@ import (
 )
 
 // fakeSMTPServer accepts one-shot SMTP sessions (no TLS, no AUTH — which
-// is what NewSMTPOutTransport(...requireTLS=false, no creds) drives) and
+// is what NewSMTPOutTransport(..., TLSNone, no creds) drives) and
 // records each delivered message's envelope + DATA blob.
 type fakeSMTPServer struct {
 	ln net.Listener
@@ -148,7 +148,7 @@ func (s *fakeSMTPServer) delivered() []deliveredSMTP {
 func smtpOutForm(t *testing.T, host string, port int, form url.Values) *httptest.ResponseRecorder {
 	t.Helper()
 	ep := contactEndpoint()
-	tp := transport.NewSMTPOutTransport(host, port, "", "", false /* requireTLS */)
+	tp := transport.NewSMTPOutTransport(host, port, "", "", transport.TLSNone)
 	h, err := gateway.New(ep, tp)
 	if err != nil {
 		t.Fatalf("gateway.New: %v", err)

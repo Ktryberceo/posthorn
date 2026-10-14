@@ -232,7 +232,7 @@ func parseDATAMultipart(t *testing.T, data []byte) []struct{ ContentType, Body s
 
 func TestSMTPOut_HTMLBody_MultipartAlternative(t *testing.T) {
 	srv := startFakeSMTPServer(t)
-	tp := newSMTPTestTransport(t, srv, false)
+	tp := newSMTPTestTransport(t, srv, TLSNone)
 
 	msg := goodSMTPMessage()
 	msg.BodyHTML = "<p>Hello <b>there</b></p>"
@@ -261,7 +261,7 @@ func TestSMTPOut_HTMLBody_MultipartAlternative(t *testing.T) {
 
 func TestSMTPOut_TextOnly_WireFormatUnchanged(t *testing.T) {
 	srv := startFakeSMTPServer(t)
-	tp := newSMTPTestTransport(t, srv, false)
+	tp := newSMTPTestTransport(t, srv, TLSNone)
 
 	if _, err := tp.Send(context.Background(), goodSMTPMessage()); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -280,7 +280,7 @@ func TestSMTPOut_TextOnly_WireFormatUnchanged(t *testing.T) {
 // smuggle a header into the message.
 func TestSMTPOut_HTMLBody_NoHeaderSmuggling(t *testing.T) {
 	srv := startFakeSMTPServer(t)
-	tp := newSMTPTestTransport(t, srv, false)
+	tp := newSMTPTestTransport(t, srv, TLSNone)
 
 	msg := goodSMTPMessage()
 	msg.BodyHTML = "<p>x</p>\r\nBcc: evil@example.com\r\n<p>y</p>"
@@ -307,7 +307,7 @@ func TestSMTPOut_HTMLBody_NoHeaderSmuggling(t *testing.T) {
 // part because it cannot predict the real boundary.
 func TestSMTPOut_HTMLBody_BoundaryNotDerivedFromContent(t *testing.T) {
 	srv := startFakeSMTPServer(t)
-	tp := newSMTPTestTransport(t, srv, false)
+	tp := newSMTPTestTransport(t, srv, TLSNone)
 
 	msg := goodSMTPMessage()
 	msg.BodyHTML = "<p>fake boundary: --boundary123--</p>"
