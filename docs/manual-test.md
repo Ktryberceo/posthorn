@@ -372,7 +372,7 @@ tls         = "starttls"   # "implicit" for a port-465 server; require_tls = tru
 hello_hostname = "mail.yourdomain.com"
 ```
 
-**Implicit TLS variant (v2.1, #132):** repeat the valid-request send with `port = 465` and `tls = "implicit"` against a server that offers it (Stalwart, Mailcow, Postfix `smtps`). Expected: the same `submission_sent` line; the server's log shows a TLS session with no STARTTLS command. Then the two mismatch checks: `tls = "implicit"` against the 587 port → 502 with `server answered in plaintext, so port 587 probably expects tls = "starttls"`; `tls = "starttls"` against 465 → 502 once the 30s cap expires, with `no SMTP greeting arrived (port 465 usually expects tls = "implicit")`.
+**Implicit TLS variant (v2.1, #132):** repeat the valid-request send with `port = 465` and `tls = "implicit"` against a server that offers it (Stalwart, Mailcow, Postfix `smtps`). Expected: the same `submission_sent` line; the server's log shows a TLS session with no STARTTLS command. Then the two mismatch checks: `tls = "implicit"` against the 587 port → 502 with `server answered in plaintext, so port 587 probably expects tls = "starttls"`; `tls = "starttls"` against 465 → 502 after the HTTP handler's 10s request cap (shorter than the transport's own 30s socket cap, so the handler cap is the one you see on a form or API endpoint), with `no SMTP greeting arrived (port 465 usually expects tls = "implicit")`.
 
 Expected `transport_message_id`: **empty** — stdlib `net/smtp` doesn't expose the upstream's `queued as <id>` response. Correlate by submission_id timestamp + recipient against the relay's own logs.
 
