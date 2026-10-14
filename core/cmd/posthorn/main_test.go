@@ -936,7 +936,9 @@ func TestLoadConfig_EnvEmptyIsError(t *testing.T) {
 
 func TestLoadConfig_EnvUnsetReadsFile(t *testing.T) {
 	t.Setenv(configSourceEnv, "") // registers the restore
-	os.Unsetenv(configSourceEnv)
+	if err := os.Unsetenv(configSourceEnv); err != nil {
+		t.Fatal(err)
+	}
 	path := writeConfig(t, validTOML)
 	_, source, err := loadConfig(path)
 	if err != nil {
