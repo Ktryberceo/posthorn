@@ -14,6 +14,10 @@ v1.0 covers three ingress shapes (HTTP form, HTTP API with Bearer auth + idempot
 
 The next milestone is **v2 — platform features**: persistent storage (SQLite submission log + durable retry queue across restarts), suppression list, lifecycle event callbacks (HMAC-signed webhooks), durable idempotency, RFC 8058 one-click unsubscribe, file attachments, HTML body, multiple outputs per endpoint, multi-tenant SMTP routing. The canonical "deliberately not on the roadmap" list is in [`spec/01-project-brief.md`](./spec/01-project-brief.md). If you're unsure whether a contribution fits, open an issue before writing code.
 
+### Adding a transport
+
+A new provider transport is accepted when all four hold: a named operator is using the provider; the bespoke client fits in roughly 250 lines of implementation, in one file under `core/transport/` (see "Registering a new transport" on the [transports page](https://posthorn.dev/configuration/transports/)); the provider has a free or sandbox tier, so the maintainer can validate it without a paid account; and the pull request includes one live send from the contributor's own account with the redacted `submission_sent` log line. Open an issue first and name the provider, then the PR carries the same tests every transport has: the header-injection table, the sentinel-credential-not-in-logs test, an entry in `core/providertest/`, a docs page, and a section in [docs/manual-test.md](./docs/manual-test.md). The maintainer writes the spec requirement.
+
 The architecture doc's [Architectural decisions log](./spec/03-architecture.md#architectural-decisions-log) records the ADRs that pin the structure. To deviate from any of them, update the architecture doc with the new decision and rationale before changing code.
 
 ## Prerequisites
