@@ -294,7 +294,7 @@ Each requires its own provider account, API credentials, and DNS setup. The sent
 
 ### What has actually been validated
 
-The record, as of 2026-09-29. The weekly CI live tier (`integration-live.yml`, since v1.1.0) runs every provider test whose credentials exist in the `live-providers` Environment; only Postmark's public test token has ever been present, so the other three provider tests have skipped on every run. A green weekly run is evidence for Postmark alone.
+The record, as of 2026-10-22. The weekly CI live tier (`integration-live.yml`, since v1.1.0) runs every provider test whose credentials exist in the `live-providers` Environment; only Postmark's public test token has ever been present, so the other three provider tests have skipped on every run. A green weekly run is evidence for Postmark alone.
 
 | Transport | Live validation on record | Where |
 |---|---|---|
@@ -302,7 +302,7 @@ The record, as of 2026-09-29. The weekly CI live tier (`integration-live.yml`, s
 | Resend | Manual, 2026-05-24 (below). CI test skips: no `RESEND_API_KEY` configured | This section |
 | Mailgun | None. CI test skips: no `MAILGUN_API_KEY` / `MAILGUN_DOMAIN` | Procedure below, unrun |
 | AWS SES | None. CI test skips: no `AWS_ROLE_ARN` | Procedure below, unrun |
-| Outbound SMTP | None | Procedure below, unrun |
+| Outbound SMTP | Manual, 2026-10-14, by an outside operator (mstdlm, [#132](https://github.com/craigmccaskill/posthorn/issues/132)): `v2.1.0-rc.1` from their contact form to their own Stalwart v0.16.19, port 465 with `tls = "implicit"` and port 587 with `tls = "starttls"`, both delivered with DKIM and SPF pass. Both mode-mismatch cases failed with the documented errors; the `starttls`-against-465 case failed at the HTTP handler's 10s cap. No CI live test: `live-providers` holds no relay credentials | Procedure below; the operator's redacted log lines are on #132 |
 | SMTP listener | No recorded validation run. In production use by an outside operator since 2026-09 (listmonk relaying to Resend, #113) | SMTP ingress procedure below |
 
 Adding a provider's credentials to the `live-providers` Environment turns its row into "weekly CI". Update this table when that happens or when a manual run is recorded.
