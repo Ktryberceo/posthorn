@@ -115,6 +115,7 @@ export default defineConfig({
             { label: 'Self-hosted Vaultwarden', slug: 'recipes/vaultwarden' },
             { label: 'listmonk on Railway (SMTP-blocked PaaS)', slug: 'recipes/listmonk' },
             { label: 'Weekly Umami digest (API mode)', slug: 'recipes/umami' },
+            { label: 'Relay through Groundmail (SMTP)', slug: 'recipes/groundmail' },
           ],
         },
         {

@@ -1,0 +1,83 @@
+---
+title: Relay through Groundmail (SMTP)
+description: Point Posthorn's outbound SMTP transport at Groundmail's relay, with the settings and errors checked against a live send on ports 587 and 2525.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+You already have a Posthorn endpoint (the [contact form](/recipes/contact-form/) is the usual one) and you want it to send through [Groundmail](https://groundmail.dev) over SMTP instead of an HTTP API transport. Only the `[endpoints.transport]` block changes; everything else in the endpoint stays as it is.
+
+**At the end:** submissions leave Posthorn on `smtp.groundmail.dev:587` (or `2525`), STARTTLS then AUTH PLAIN, and the log shows `submission_sent`.
+
+## Prerequisites
+
+- A Groundmail account with your sending domain verified (Groundmail shows the DNS records to add)
+- An SMTP credential, created in the Groundmail dashboard under **SMTP**. It starts with `gmsmtp_` and is shown once.
+
+Until you verify a sending domain and add a payment method, Groundmail only sends from `noreply@mail.groundmail.dev` to your own account email; other recipients are rejected.
+
+## Walkthrough
+
+<Steps>
+
+1. **Replace the endpoint's transport block in `posthorn.toml`.**
+
+   ```toml
+   [endpoints.transport]
+   type = "smtp"
+
+   [endpoints.transport.settings]
+   host     = "smtp.groundmail.dev"
+   port     = 587               # 2525 if your host blocks outbound 587
+   username = "groundmail"      # literally "groundmail", not your email address
+   password = "${env.GROUNDMAIL_SMTP_PASSWORD}"
+   tls      = "starttls"
+   ```
+
+   The endpoint's `from` must be an address on the domain you verified, for example `from = "Contact Form <noreply@yourdomain.com>"`.
+
+2. **Add the credential to `.env`.**
+
+   ```bash
+   GROUNDMAIL_SMTP_PASSWORD=gmsmtp_...
+   ```
+
+3. **Check the config and restart.**
+
+   ```bash
+   posthorn validate --config ./posthorn.toml
+   docker compose up -d && docker compose logs -f posthorn
+   ```
+
+   ```json
+   {"msg":"endpoint registered","path":"/api/contact","transport":"smtp","recipients":1}
+   ```
+
+4. **Send a test submission** (the same curl as in the [contact form recipe](/recipes/contact-form/)). The log should show:
+
+   ```json
+   {"msg":"submission_received","submission_id":"...","endpoint":"/api/contact","transport":"smtp"}
+   {"msg":"submission_sent","submission_id":"...","endpoint":"/api/contact","transport":"smtp","latency_ms":1805}
+   ```
+
+   `transport_message_id` is empty for the SMTP transport (see [Outbound SMTP](/configuration/transports/smtp/)). The message shows up in Groundmail's dashboard under **Emails**, which is where to look it up by recipient and time.
+
+</Steps>
+
+## Common gotchas
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `535 Invalid SMTP credentials` | Username isn't `groundmail`, or the password isn't a current SMTP credential | Set `username = "groundmail"` and create a new credential if the old one was revoked |
+| `DATA finalize failed (class=terminal status=554)`, `From domain '...' is not verified` | The endpoint's `from` is on a domain that isn't verified in Groundmail | Verify the domain, or change `from` to an address on a verified domain |
+| `554` for a recipient that isn't you, before the account is set up | The account is still limited to sending to its own email | Verify a sending domain and add a payment method |
+| Connection times out on connect | The host blocks outbound 587 | Set `port = 2525`; everything else stays the same |
+
+<Aside type="note" title="Tested">
+Checked with Posthorn built from `main` (the `smtp` transport with `tls = "starttls"`): live sends from a form endpoint on ports 587 and 2525 each logged `submission_sent`, a wrong password returned `535`, and a `from` on an unverified domain returned `554` as a terminal error.
+</Aside>
+
+## Where to go next
+
+- [Outbound SMTP](/configuration/transports/smtp/) for every transport setting and error class
+- [Groundmail SMTP docs](https://docs.groundmail.dev/smtp) for creating and revoking credentials
